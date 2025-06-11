@@ -112,15 +112,19 @@ impl _Controller {
         })
     }
     fn send_slice(&mut self, slice: Slice, message: WorkerMessage) -> PyResult<()> {
-        let shape = Shape::new(
-            (0..slice.sizes().len()).map(|i| format!("d{i}")).collect(),
-            slice,
-        )
-        .unwrap();
-        let worker_slice = SlicedActorMesh::new(&self.workers, shape);
-        worker_slice
-            .cast(ndslice::Selection::True, message)
+        self.workers
+            .cast_slices(vec![slice], message)
             .map_err(|err| PyErr::new::<PyValueError, _>(err.to_string()))
+        // let shape = Shape::new(
+        //     (0..slice.sizes().len()).map(|i| format!("d{i}")).collect(),
+        //     slice,
+        // )
+        // .unwrap();
+        // println!("SENDING TO {:?} {:?}", &shape, &message);
+        // let worker_slice = SlicedActorMesh::new(&self.workers, shape);
+        // worker_slice
+        //     .cast(ndslice::Selection::True, message)
+        //     .map_err(|err| PyErr::new::<PyValueError, _>(err.to_string()))
     }
 }
 
@@ -161,7 +165,11 @@ impl _Controller {
                 let workers = py_proc_mesh
                     .spawn(&format!("tensor_engine_workers_{}", id), &param)
                     .await?;
-                workers.cast(ndslice::Selection::True, AssignRankMessage::AssignRank())?;
+                //workers.cast(ndslice::Selection::True, )?;
+                workers.cast_slices(
+                    vec![py_proc_mesh.shape().slice().clone()],
+                    AssignRankMessage::AssignRank(),
+                )?;
                 Ok(workers)
             })?;
         Ok(Self {
@@ -246,14 +254,14 @@ impl _Controller {
             .map_err(|err| PyErr::new::<PyValueError, _>(err.to_string()))?;
         Ok(())
     }
-    fn _drain_and_stop(&mut self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn _drain_and_stop(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.send_slice(
+            self.workers.proc_mesh().shape().slice().clone(),
+            WorkerMessage::Exit { error: None },
+        )?;
         let instance = self.controller_instance.clone();
-        let result =
-            signal_safe_block_on(py, async move { instance.lock().await.drain_and_stop() })??;
-        for r in result {
-            self.add_message(r)?;
-        }
-        Ok(std::mem::take(&mut self.pending_messages))
+        let _ = signal_safe_block_on(py, async move { instance.lock().await.drain_and_stop() })??;
+        Ok(())
     }
 }
 
